@@ -3,3 +3,4 @@ project(bookstore)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_executable(code src/code.cpp)
+# ensure only code is built

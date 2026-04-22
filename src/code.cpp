@@ -16,7 +16,7 @@ namespace util {
     bool isPrintable(char c){ return c >= 32 && c <= 126; }
 }
 
-struct StackEntry { string uid; int priv; };
+struct StackEntry { string uid; int priv; string selected_isbn; };
 
 struct AccountStore {
     string path = "accounts.txt";
@@ -92,6 +92,12 @@ int main(){
             bool logged=false; for(auto &e: st){ if(e.uid==uid){ logged=true; break; } }
             if(logged){ invalid(); continue; }
             accounts.remove(uid);
+        } else if(cmd=="select"){
+            if(tokens.size()!=2){ invalid(); continue; }
+            if(current_priv()<3){ invalid(); continue; }
+            string isbn=tokens[1]; if(isbn.empty()||isbn.size()>20){ invalid(); continue; }
+            if(st.empty()){ invalid(); continue; }
+            st.back().selected_isbn = isbn; // create lazily later in modify/import
         } else {
             // unimplemented commands
             invalid();
