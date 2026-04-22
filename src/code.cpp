@@ -18,6 +18,31 @@ namespace util {
 
 struct StackEntry { string uid; int priv; string selected_isbn; };
 
+struct BookRec { string isbn,name,author,keyword; double price; int stock; bool deleted; };
+struct BookStore {
+    string path = "books.txt";
+    BookStore(){ ifstream fin(path); if(!fin.good()){ ofstream fout(path); fout.close(); } }
+    static optional<BookRec> parseLine(const string &line){
+        // isbn\tname\tauthor\tkeyword\tprice\tstock\tdeleted
+        vector<string> p; size_t i=0; for(int k=0;k<6;k++){ auto q=line.find('\t', i); if(q==string::npos) return nullopt; p.push_back(line.substr(i,q-i)); i=q+1; } p.push_back(line.substr(i)); if(p.size()!=7) return nullopt;
+        BookRec b; b.isbn=p[0]; b.name=p[1]; b.author=p[2]; b.keyword=p[3]; b.price=0.0; try{ b.price=stod(p[4]); }catch(...){ b.price=0.0; } b.stock=0; try{ b.stock=stoi(p[5]); }catch(...){ b.stock=0; } b.deleted=(p[6]=="1"); return b;
+    }
+    bool exists(const string &isbn){ ifstream fin(path); string line; while(getline(fin,line)){ auto b=parseLine(line); if(b && !b->deleted && b->isbn==isbn) return true; } return false; }
+    optional<BookRec> get(const string &isbn){ ifstream fin(path); string line; while(getline(fin,line)){ auto b=parseLine(line); if(b && !b->deleted && b->isbn==isbn) return b; } return nullopt; }
+    void writeAll(const vector<string> &lines){ ofstream fout(path, ios::trunc); for(auto &l: lines) fout<<l<<"\n"; }
+    bool upsert(const BookRec &nb){ ifstream fin(path); vector<string> lines; string line; bool done=false; while(getline(fin,line)){ auto b=parseLine(line); if(b && b->isbn==nb.isbn){ string nl = nb.isbn+'\t'+nb.name+'\t'+nb.author+'\t'+nb.keyword+'\t'+to_string(nb.price)+'\t'+to_string(nb.stock)+'\t'+(nb.deleted?"1":"0"); lines.push_back(nl); done=true; } else lines.push_back(line);} fin.close(); if(!done){ string nl = nb.isbn+'\t'+nb.name+'\t'+nb.author+'\t'+nb.keyword+'\t'+to_string(nb.price)+'\t'+to_string(nb.stock)+'\t'+(nb.deleted?"1":"0"); lines.push_back(nl);} writeAll(lines); return true; }
+    bool updateIsbn(const string &oldIsbn, const string &newIsbn){ ifstream fin(path); vector<string> lines; string line; bool ok=false; while(getline(fin,line)){ auto b=parseLine(line); if(b && b->isbn==oldIsbn){ b->isbn=newIsbn; string nl=b->isbn+'\t'+b->name+'\t'+b->author+'\t'+b->keyword+'\t'+to_string(b->price)+'\t'+to_string(b->stock)+'\t'+(b->deleted?"1":"0"); lines.push_back(nl); ok=true; } else lines.push_back(line);} fin.close(); writeAll(lines); return ok; }
+    vector<BookRec> listAll(){ vector<BookRec> v; ifstream fin(path); string line; while(getline(fin,line)){ auto b=parseLine(line); if(b && !b->deleted) v.push_back(*b);} return v; }
+};
+
+struct FinanceLog {
+    string path = "finance.txt";
+    FinanceLog(){ ifstream fin(path); if(!fin.good()){ ofstream fout(path); fout.close(); } }
+    void addIncome(double x){ ofstream fout(path, ios::app); fout<<fixed<<setprecision(2)<<x<<"\t"<<0<<"\n"; }
+    void addExpenditure(double x){ ofstream fout(path, ios::app); fout<<fixed<<setprecision(2)<<0<<"\t"<<x<<"\n"; }
+    vector<pair<double,double>> all(){ vector<pair<double,double>> v; ifstream fin(path); string a,b; while(fin>>a>>b){ double ai=stod(a), be=stod(b); v.emplace_back(ai,be);} return v; }
+};
+
 struct AccountStore {
     string path = "accounts.txt";
     AccountStore(){
@@ -97,7 +122,70 @@ int main(){
             if(current_priv()<3){ invalid(); continue; }
             string isbn=tokens[1]; if(isbn.empty()||isbn.size()>20){ invalid(); continue; }
             if(st.empty()){ invalid(); continue; }
-            st.back().selected_isbn = isbn; // create lazily later in modify/import
+            st.back().selected_isbn = isbn;
+            // create book if missing with only ISBN
+            BookStore bs; if(!bs.exists(isbn)){ BookRec rec{isbn, "", "", "", 0.0, 0, false}; bs.upsert(rec); }
+        } else if(cmd=="modify"){
+            if(current_priv()<3){ invalid(); continue; }
+            if(st.empty()||st.back().selected_isbn.empty()){ invalid(); continue; }
+            string cur = st.back().selected_isbn;
+            // parse options, prevent duplicates
+            set<string> seen;
+            string newIsbn=""; bool ch_isbn=false;
+            optional<string> name, author, keyword, price;
+            for(size_t i=1;i<tokens.size();++i){ string opt=tokens[i]; auto eq=opt.find('='); if(eq==string::npos){ invalid(); goto nextline; } string key=opt.substr(0,eq); string rhs=opt.substr(eq+1); if(seen.count(key)){ invalid(); goto nextline; } seen.insert(key);
+                if(key=="-ISBN"){ if(rhs.empty()){ invalid(); goto nextline; } if(rhs==cur){ invalid(); goto nextline; } if(rhs.size()>20){ invalid(); goto nextline; } ch_isbn=true; newIsbn=rhs; }
+                else if(key=="-name"){ if(rhs.size()<2||rhs.front()!='"'||rhs.back()!='"'){ invalid(); goto nextline; } string val=rhs.substr(1,rhs.size()-2); if(val.empty()||val.size()>60){ invalid(); goto nextline; } name=val; }
+                else if(key=="-author"){ if(rhs.size()<2||rhs.front()!='"'||rhs.back()!='"'){ invalid(); goto nextline; } string val=rhs.substr(1,rhs.size()-2); if(val.empty()||val.size()>60){ invalid(); goto nextline; } author=val; }
+                else if(key=="-keyword"){ if(rhs.size()<2||rhs.front()!='"'||rhs.back()!='"'){ invalid(); goto nextline; } string val=rhs.substr(1,rhs.size()-2); if(val.empty()||val.size()>60){ invalid(); goto nextline; } // check duplicates
+                    vector<string> segs; string curk; for(char c: val){ if(c=='|'){ segs.push_back(curk); curk.clear(); } else curk.push_back(c);} segs.push_back(curk); set<string> stp; for(auto &x: segs){ if(x.empty()){ invalid(); goto nextline; } if(stp.count(x)){ invalid(); goto nextline; } stp.insert(x);} keyword=val; }
+                else if(key=="-price"){ if(rhs.empty()){ invalid(); goto nextline; } price=rhs; }
+                else { invalid(); goto nextline; }
+            }
+            {
+                // create if missing
+                BookStore bs; auto b = bs.get(cur); BookRec rec; if(b) rec=*b; else { rec = BookRec{cur, "", "", "", 0.0, 0, false}; bs.upsert(rec);} // now apply
+                if(ch_isbn){ if(bs.exists(newIsbn)){ invalid(); goto nextline; } bs.updateIsbn(cur, newIsbn); st.back().selected_isbn = newIsbn; cur = newIsbn; rec.isbn = newIsbn; }
+                if(name) rec.name = *name;
+                if(author) rec.author = *author;
+                if(keyword) rec.keyword = *keyword;
+                if(price){ try{ rec.price = stod(*price); }catch(...){ invalid(); goto nextline; } }
+                bs.upsert(rec);
+            }
+            nextline:;
+        } else if(cmd=="import"){
+            if(tokens.size()!=3){ invalid(); continue; }
+            if(current_priv()<3){ invalid(); continue; }
+            if(st.empty()||st.back().selected_isbn.empty()){ invalid(); continue; }
+            string cur = st.back().selected_isbn;
+            int qty=0; try{ qty = stoi(tokens[1]); }catch(...){ qty=0; }
+            double cost=0.0; try{ cost = stod(tokens[2]); }catch(...){ cost=0.0; }
+            if(qty<=0 || !(cost>0.0)){ invalid(); continue; }
+            BookStore bs; auto b = bs.get(cur); BookRec rec; if(b) rec=*b; else { rec = BookRec{cur, "", "", "", 0.0, 0, false}; }
+            rec.stock += qty; bs.upsert(rec);
+            FinanceLog fl; fl.addExpenditure(cost);
+        } else if(cmd=="show"){
+            if(current_priv()<1){ invalid(); continue; }
+            BookStore bs; vector<BookRec> all = bs.listAll();
+            string type=""; string val=""; if(tokens.size()==2){ string opt=tokens[1]; auto eq=opt.find('='); if(eq==string::npos){ invalid(); continue; } string key=opt.substr(0,eq); string rhs=opt.substr(eq+1);
+                if(key=="-ISBN"){ type="isbn"; val=rhs; if(val.empty()||val.size()>20){ invalid(); continue; } }
+                else if(key=="-name"){ if(rhs.size()<2||rhs.front()!='"'||rhs.back()!='"'){ invalid(); continue; } val=rhs.substr(1,rhs.size()-2); if(val.empty()||val.size()>60){ invalid(); continue; } type="name"; }
+                else if(key=="-author"){ if(rhs.size()<2||rhs.front()!='"'||rhs.back()!='"'){ invalid(); continue; } val=rhs.substr(1,rhs.size()-2); if(val.empty()||val.size()>60){ invalid(); continue; } type="author"; }
+                else if(key=="-keyword"){ if(rhs.size()<2||rhs.front()!='"'||rhs.back()!='"'){ invalid(); continue; } val=rhs.substr(1,rhs.size()-2); if(val.empty()||val.size()>60){ invalid(); continue; } if(val.find('|')!=string::npos){ invalid(); continue; } type="keyword"; }
+                else { invalid(); continue; }
+            } else if(tokens.size()>2){ invalid(); continue; }
+            vector<BookRec> res; for(auto &b: all){ bool ok=true; if(type=="isbn") ok = (b.isbn==val); else if(type=="name") ok=(b.name==val); else if(type=="author") ok=(b.author==val); else if(type=="keyword") ok=(b.keyword==val); if(ok) res.push_back(b);} sort(res.begin(),res.end(),[](const BookRec&a,const BookRec&b){return a.isbn<b.isbn;});
+            if(res.empty()){ cout<<"\n"; continue; }
+            for(auto &b: res){ cout<<b.isbn<<'\t'<<b.name<<'\t'<<b.author<<'\t'<<b.keyword<<'\t'<<fixed<<setprecision(2)<<b.price<<'\t'<<b.stock<<"\n"; }
+        } else if(cmd=="buy"){
+            if(tokens.size()!=3){ invalid(); continue; }
+            if(current_priv()<1){ invalid(); continue; }
+            string isbn=tokens[1]; int q=0; try{ q=stoi(tokens[2]); }catch(...){ q=0; }
+            if(q<=0){ invalid(); continue; }
+            BookStore bs; auto b=bs.get(isbn); if(!b){ invalid(); continue; }
+            if(b->stock < q){ invalid(); continue; }
+            b->stock -= q; bs.upsert(*b);
+            double total = b->price * q; FinanceLog fl; fl.addIncome(total); cout<<fixed<<setprecision(2)<<total<<"\n";
         } else {
             // unimplemented commands
             invalid();
