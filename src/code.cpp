@@ -41,6 +41,15 @@ struct FinanceLog {
     void addIncome(double x){ ofstream fout(path, ios::app); fout<<fixed<<setprecision(2)<<x<<"\t"<<0<<"\n"; }
     void addExpenditure(double x){ ofstream fout(path, ios::app); fout<<fixed<<setprecision(2)<<0<<"\t"<<x<<"\n"; }
     vector<pair<double,double>> all(){ vector<pair<double,double>> v; ifstream fin(path); string a,b; while(fin>>a>>b){ double ai=stod(a), be=stod(b); v.emplace_back(ai,be);} return v; }
+    pair<double,double> sumLast(int cnt){ auto v=all(); if(cnt<0) cnt=0; if(cnt>(int)v.size()) return {nan(""), nan("")}; double inc=0,exp=0; for(int i=max(0,(int)v.size()-cnt); i<(int)v.size(); ++i){ inc+=v[i].first; exp+=v[i].second; } return {inc,exp}; }
+};
+
+struct OperationLog {
+    string path = "ops.txt";
+    OperationLog(){ ifstream fin(path); if(!fin.good()){ ofstream fout(path); fout.close(); } }
+    void add(const string &uid, const string &op){ ofstream fout(path, ios::app); fout<<uid<<'\t'<<op<<"\n"; }
+    map<string,int> counts(){ map<string,int> m; ifstream fin(path); string uid, op; while(fin>>uid>>op){ m[uid]++; } return m; }
+    vector<pair<string,string>> lastN(int n){ vector<pair<string,string>> v; ifstream fin(path); string uid, op; while(fin>>uid>>op){ v.emplace_back(uid,op);} if(n>(int)v.size()) n=v.size(); return vector<pair<string,string>>(v.end()-n, v.end()); }
 };
 
 struct AccountStore {
@@ -74,6 +83,7 @@ int main(){
 
     AccountStore accounts; vector<StackEntry> st;
     auto current_priv = [&](){ return st.empty()?0:st.back().priv; };
+    auto current_uid = [&](){ return st.empty()?string(""):st.back().uid; };
 
     string line;
     while(getline(cin,line)){
@@ -82,33 +92,34 @@ int main(){
         auto invalid=[&](){ cout<<"Invalid\n"; };
 
         if(cmd=="su"){
+            OperationLog oplog;
             if(tokens.size()!=2 && tokens.size()!=3){ invalid(); continue; }
             string uid=tokens[1]; if(!valid_id(uid)){ invalid(); continue; }
             auto rec = accounts.get(uid); if(!rec){ invalid(); continue; }
             int target_priv = rec->priv;
-            if(tokens.size()==2){ if(current_priv()>target_priv){ st.push_back({uid,target_priv}); } else { invalid(); } }
-            else { string pwd=tokens[2]; if(!valid_pwd(pwd)){ invalid(); continue; } if(rec->pwd==pwd){ st.push_back({uid,target_priv}); } else { invalid(); } }
+            if(tokens.size()==2){ if(current_priv()>target_priv){ st.push_back({uid,target_priv,""}); oplog.add(current_uid(), string("su ")+uid); } else { invalid(); } }
+            else { string pwd=tokens[2]; if(!valid_pwd(pwd)){ invalid(); continue; } if(rec->pwd==pwd){ st.push_back({uid,target_priv,""}); oplog.add(current_uid(), string("su ")+uid); } else { invalid(); } }
         } else if(cmd=="logout"){
-            if(tokens.size()!=1){ invalid(); continue; } if(st.empty()){ invalid(); continue; } st.pop_back();
+            if(tokens.size()!=1){ invalid(); continue; } if(st.empty()){ invalid(); continue; } OperationLog oplog; oplog.add(current_uid(), "logout"); st.pop_back();
         } else if(cmd=="register"){
             if(tokens.size()!=4){ invalid(); continue; }
             string uid=tokens[1], pwd=tokens[2], uname=tokens[3]; if(!valid_id(uid)||!valid_pwd(pwd)||!valid_username(uname)){ invalid(); continue; }
             if(accounts.exists(uid)){ invalid(); continue; }
-            accounts.create(uid,pwd,1,uname);
+            accounts.create(uid,pwd,1,uname); OperationLog oplog; oplog.add(current_uid(), string("register ")+uid);
         } else if(cmd=="passwd"){
             if(tokens.size()!=3 && tokens.size()!=4){ invalid(); continue; }
             if(current_priv()<1){ invalid(); continue; }
             string uid=tokens[1]; if(!valid_id(uid)){ invalid(); continue; }
             auto rec=accounts.get(uid); if(!rec){ invalid(); continue; }
             string newpwd=tokens.back(); if(!valid_pwd(newpwd)){ invalid(); continue; }
-            if(tokens.size()==3){ if(current_priv()==7){ accounts.setPassword(uid,newpwd); } else { invalid(); continue; } }
-            else { string curpwd=tokens[2]; if(!valid_pwd(curpwd)){ invalid(); continue; } if(rec->pwd==curpwd){ accounts.setPassword(uid,newpwd); } else { invalid(); continue; } }
+            if(tokens.size()==3){ if(current_priv()==7){ accounts.setPassword(uid,newpwd); OperationLog oplog; oplog.add(current_uid(), string("passwd ")+uid); } else { invalid(); continue; } }
+            else { string curpwd=tokens[2]; if(!valid_pwd(curpwd)){ invalid(); continue; } if(rec->pwd==curpwd){ accounts.setPassword(uid,newpwd); OperationLog oplog; oplog.add(current_uid(), string("passwd ")+uid); } else { invalid(); continue; } }
         } else if(cmd=="useradd"){
             if(tokens.size()!=5){ invalid(); continue; }
             if(current_priv()<3){ invalid(); continue; }
             string uid=tokens[1], pwd=tokens[2], privs=tokens[3], uname=tokens[4]; if(!valid_id(uid)||!valid_pwd(pwd)||!valid_username(uname)||!valid_priv_str(privs)){ invalid(); continue; }
             int p = privs[0]-'0'; if(p>=current_priv()){ invalid(); continue; } if(accounts.exists(uid)){ invalid(); continue; }
-            accounts.create(uid,pwd,p,uname);
+            accounts.create(uid,pwd,p,uname); OperationLog oplog; oplog.add(current_uid(), string("useradd ")+uid);
         } else if(cmd=="delete"){
             if(tokens.size()!=2){ invalid(); continue; }
             if(current_priv()<7){ invalid(); continue; }
@@ -116,7 +127,7 @@ int main(){
             if(!accounts.exists(uid)){ invalid(); continue; }
             bool logged=false; for(auto &e: st){ if(e.uid==uid){ logged=true; break; } }
             if(logged){ invalid(); continue; }
-            accounts.remove(uid);
+            accounts.remove(uid); OperationLog oplog; oplog.add(current_uid(), string("delete ")+uid);
         } else if(cmd=="select"){
             if(tokens.size()!=2){ invalid(); continue; }
             if(current_priv()<3){ invalid(); continue; }
@@ -125,6 +136,7 @@ int main(){
             st.back().selected_isbn = isbn;
             // create book if missing with only ISBN
             BookStore bs; if(!bs.exists(isbn)){ BookRec rec{isbn, "", "", "", 0.0, 0, false}; bs.upsert(rec); }
+            OperationLog oplog; oplog.add(current_uid(), string("select ")+isbn);
         } else if(cmd=="modify"){
             if(current_priv()<3){ invalid(); continue; }
             if(st.empty()||st.back().selected_isbn.empty()){ invalid(); continue; }
@@ -150,7 +162,7 @@ int main(){
                 if(author) rec.author = *author;
                 if(keyword) rec.keyword = *keyword;
                 if(price){ try{ rec.price = stod(*price); }catch(...){ invalid(); goto nextline; } }
-                bs.upsert(rec);
+                bs.upsert(rec); OperationLog oplog; oplog.add(current_uid(), string("modify ")+cur);
             }
             nextline:;
         } else if(cmd=="import"){
@@ -164,6 +176,7 @@ int main(){
             BookStore bs; auto b = bs.get(cur); BookRec rec; if(b) rec=*b; else { rec = BookRec{cur, "", "", "", 0.0, 0, false}; }
             rec.stock += qty; bs.upsert(rec);
             FinanceLog fl; fl.addExpenditure(cost);
+            OperationLog oplog; oplog.add(current_uid(), string("import ")+to_string(qty));
         } else if(cmd=="show"){
             if(current_priv()<1){ invalid(); continue; }
             BookStore bs; vector<BookRec> all = bs.listAll();
@@ -185,7 +198,23 @@ int main(){
             BookStore bs; auto b=bs.get(isbn); if(!b){ invalid(); continue; }
             if(b->stock < q){ invalid(); continue; }
             b->stock -= q; bs.upsert(*b);
-            double total = b->price * q; FinanceLog fl; fl.addIncome(total); cout<<fixed<<setprecision(2)<<total<<"\n";
+            double total = b->price * q; FinanceLog fl; fl.addIncome(total); cout<<fixed<<setprecision(2)<<total<<"\n"; OperationLog oplog; oplog.add(current_uid(), string("buy ")+isbn);
+        } else if(cmd=="show" && tokens.size()>=2 && tokens[1]=="finance"){
+            // handle show finance ([Count])?
+            if(current_priv()<7){ invalid(); continue; }
+            if(tokens.size()==2){ FinanceLog fl; auto p = fl.sumLast(-1); cout<<"+ "<<fixed<<setprecision(2)<<p.first<<" - "<<fixed<<setprecision(2)<<p.second<<"\n"; }
+            else if(tokens.size()==3){ int c=0; try{ c=stoi(tokens[2]); }catch(...){ invalid(); continue; } if(c==0){ cout<<"\n"; continue; } FinanceLog fl; auto p=fl.sumLast(c); if(isnan(p.first)||isnan(p.second)){ invalid(); continue; } cout<<"+ "<<fixed<<setprecision(2)<<p.first<<" - "<<fixed<<setprecision(2)<<p.second<<"\n"; }
+            else { invalid(); continue; }
+        } else if(cmd=="log"){
+            if(current_priv()<7){ invalid(); continue; }
+            OperationLog opl; auto last = opl.lastN(50); // arbitrary cap
+            for(auto &pr: last){ cout<<pr.first<<"\t"<<pr.second<<"\n"; }
+        } else if(cmd=="report"){
+            if(current_priv()<7){ invalid(); continue; }
+            if(tokens.size()!=2){ invalid(); continue; }
+            if(tokens[1]=="finance"){ FinanceLog fl; auto v=fl.all(); double inc=0,exp=0; for(auto &p:v){ inc+=p.first; exp+=p.second; } cout<<"+ "<<fixed<<setprecision(2)<<inc<<" - "<<fixed<<setprecision(2)<<exp<<"\n"; }
+            else if(tokens[1]=="employee"){ OperationLog opl; auto m=opl.counts(); for(auto &kv: m){ cout<<kv.first<<"\t"<<kv.second<<"\n"; } }
+            else { invalid(); }
         } else {
             // unimplemented commands
             invalid();
